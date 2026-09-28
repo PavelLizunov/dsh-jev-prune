@@ -1536,8 +1536,11 @@ export function apply(ctx, config, deps = {}) {
             stats.compactedSeqs += applied
             stats.compactedChars += appliedChars
             stats.receiptSummaries += applied
+            action.nodes = applied
+            action.calls = applied
             action.partialResults = applied
             action.resultChars = appliedChars
+            action.shadowedSeqs = applied
             action.ok = true
             action.incomplete = true
           }
