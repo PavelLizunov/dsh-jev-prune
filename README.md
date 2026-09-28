@@ -52,8 +52,6 @@ Numbers below come from a three-arm measurement of a 37-step "read every file in
 
 **A failure mode we found and fixed.** Receipts replace a whole "call + result" step, including the assistant message that carried it; in one long run the model's intermediate notes were erased step by step (12 of 13) and it stopped issuing tool calls mid-task. Receipts now carry each step's **assistant-visible text verbatim** (`text` blocks only, `reasoning` drafts excluded, zero model generation; bounded by `receiptTextChars`, default 400, `0` disables). After the fix, the same long task completed in every run with correct answers.
 
-> **Caveats, stated up front**: n = 1–3 per cell — treat these numbers as magnitudes and directions, not statistics. The context window was pinned to **10K** for all arms (with the default 1M window neither layer can trigger — see *Host compaction threshold vs. `softLimit`*), so the numbers describe that regime.
-
 ## Gating (layer 2)
 
 Moving a whole pair out of the surface is destructive, so the default is deliberately conservative. Every one of the following must hold:
