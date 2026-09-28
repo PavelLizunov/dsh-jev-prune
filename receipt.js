@@ -728,14 +728,46 @@ function resultCharsOf(event) {
  * 每一行都是可以核对的**事实**：工具名、命令/路径（逐字截断）、输出字符数、seq。
  * 刻意**不**写任何"我们发现了…""因此…"式的推断句——那正是摘要会幻觉的地方。
  */
-export function renderReceipt(range, { eventAt, argChars = 120 } = {}) {
+/**
+ * 取 assistant 消息的**可见文本**（`text` 块），**逐字**返回，不做任何推断。
+ *
+ * 为什么必须逐字保留（修复：长任务提前收工）：
+ *   第二层把「调用 + 结果」整段移出 surface。若回执只留调用事实，模型自己写下的
+ *   **结论与进度**会一并消失。`maxStepTextChars` 只拦「长文本」，而「每步一句短结论」
+ *   这类工作流的文本很短（实测 10–20 字），拦不住。
+ *   实测证据：37 步逐文件读取任务中，模型的 12/13 条中间输出被逐步抹掉，
+ *   随后在第 14 步只输出一句概括、不再发起工具调用，任务中途终止。
+ *   把模型原话逐字抄进回执，**不引入任何模型生成**，但保住模型的进行中状态。
+ *
+ * 注意：这里是**逐字复制**，不是推断。测试中「回执不得含推断性表述」的断言
+ * 针对的是**插件生成**的内容；原话属于引用，且由 `verbatim` 标签标明来源。
+ */
+function assistantVisibleText(event, maxChars) {
+  const content = event?.data?.message?.content
+  if (!Array.isArray(content)) return ''
+  const parts = []
+  for (const block of content) {
+    if (block?.type !== 'text' || typeof block.text !== 'string') continue
+    parts.push(block.text)
+  }
+  const text = parts.join(' ').replace(/\s+/g, ' ').trim()
+  if (text.length === 0) return ''
+  const chars = Array.from(text)
+  return chars.length > maxChars ? `${chars.slice(0, maxChars).join('')}…` : text
+}
+
+export function renderReceipt(range, { eventAt, argChars = 120, textChars = 400 } = {}) {
   const lines = []
   const count = range.steps.reduce((sum, step) => sum + step.calls.length, 0)
   lines.push(
     `${RECEIPT_MARKER} 原历史 s${range.start}–s${range.end} 是 ${count} 次工具调用`
-    + `（共约 ${range.chars} 字符输出），为释放上下文已移出。以下为事实清单（代码生成，无模型推断）：`,
+    + `（共约 ${range.chars} 字符输出），为释放上下文已移出。以下为事实清单`
+    + `（工具名/入参/字符数/seq 由代码算出；模型原话逐字引用，不含任何推断）：`,
   )
   for (const step of range.steps) {
+    // ★ 修复：把该步模型自己的可见文本逐字带上，避免把模型的结论/进度一并抹掉。
+    const said = assistantVisibleText(step.head, textChars)
+    if (said) lines.push(`· s${step.headSeq} 模型原话（逐字引用）：${said}`)
     step.calls.forEach((call, offset) => {
       const seq = step.resultSeqs[offset] ?? step.headSeq
       const args = renderCallArgs(call, argChars)

@@ -1136,6 +1136,59 @@ const run = ({ events, cache, cfg, threshold }) => {
   }
 }
 
+// ------------------------------------------------ 回执逐字带上 assistant 可见文本
+// 背景：第二层把「调用 + 结果」**整段**移出 surface，其中包含 assistant 消息本身。
+// 若回执只留调用事实，模型自己写下的**结论与进度**会一并消失。`maxStepTextChars`
+// 只拦「长文本」，而「每步一句短结论」的工作流文本很短，拦不住。
+// 实测影响：37 步逐文件读取任务中，模型的 12/13 条中间输出被逐步抹掉，
+// 随后在第 14 步只输出一句概括、不再发起工具调用，任务中途终止。
+{
+  const head = {
+    seq: 1,
+    type: 'assistant/message',
+    data: { message: { content: [
+      { type: 'reasoning', text: '这是思考草稿，不应进入回执' },
+      { type: 'text', text: 'identifiers：把版本字符串拆成标识符。' },
+      { type: 'tool-call', id: 'c1', name: 'read', arguments: JSON.stringify({ file_path: 'internal/identifiers.js' }) },
+    ] } },
+  }
+  const evs = [head, toolResult(2, 'c1', 'x'.repeat(900))]
+  const at = (s) => evs.find((e) => e.seq === s)
+  const text = renderReceipt(
+    {
+      start: 1,
+      end: 2,
+      chars: 900,
+      steps: [{
+        headSeq: 1,
+        head,
+        calls: [{ name: 'read', arguments: JSON.stringify({ file_path: 'internal/identifiers.js' }) }],
+        resultSeqs: [2],
+      }],
+    },
+    { eventAt: at },
+  )
+  assert.match(text, /模型原话（逐字引用）：identifiers：把版本字符串拆成标识符。/,
+    '回执必须逐字保留该步 assistant 的可见文本（否则模型丢失自己的进度/结论）')
+  assert.equal(text.includes('这是思考草稿'), false, 'reasoning 草稿不得进入回执')
+  assert.match(text, /internal\/identifiers\.js/, '调用事实仍必须在回执里')
+  // 确定性仍然成立：同一输入两次渲染完全相同
+  assert.equal(text, renderReceipt(
+    {
+      start: 1,
+      end: 2,
+      chars: 900,
+      steps: [{
+        headSeq: 1,
+        head,
+        calls: [{ name: 'read', arguments: JSON.stringify({ file_path: 'internal/identifiers.js' }) }],
+        resultSeqs: [2],
+      }],
+    },
+    { eventAt: at },
+  ))
+}
+
 // ---------------------------------------------------------------- 证据守卫与入参渲染
 {
   assert.equal(scanEvidence('TypeError: x is undefined', ['error']).hit, true)
