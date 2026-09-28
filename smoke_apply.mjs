@@ -498,6 +498,7 @@ function eligibleSeqsFrom(report) {
     compactQuantile: 1, // 测试专用：三条全取，才验得到"合并成一段"
     minCandidatesForRelative: 3,
     compactMinChars: 1000,
+    receiptTextChars: 3,
   }, { judge })
 
   const agentRef = { agent: { session, options: {} } }
@@ -516,6 +517,8 @@ function eligibleSeqsFrom(report) {
       call.summary.includes('[已压缩 · 确定性回执]') && !call.summary.includes('基线模型摘要'),
       call.summary.slice(0, 80))
     check('回执 provider 标记为 jev-receipt', call.provider === 'jev-receipt', String(call.provider))
+    check('真实压缩路径保留 assistant 可见文本，并透传 receiptTextChars',
+      call.summary.includes('模型原话（原文摘录）：看一下…'), call.summary)
     // 回执必须逐字记录命令与路径 —— 这是"整对删除后事实仍不丢"的依据
     check('回执记录了 Read 的路径', call.summary.includes('server/src/game/river.ts'))
     check('回执记录了 Grep 的 pattern', call.summary.includes('basePot'))
