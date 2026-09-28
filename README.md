@@ -7,7 +7,7 @@ Structured judgments from [TypeSafe Jev](https://typesafe.ai) drive DSH's two-la
 
 **English** · [简体中文](README_zh.md)
 
-![license](https://img.shields.io/badge/license-MIT-blue) ![node](https://img.shields.io/badge/node%20%3E%3D22.19-339933) ![dsh](https://img.shields.io/badge/DSH-0.1.x--rc-orange) [![CI](https://github.com/yangyu666/dsh-jev-prune/actions/workflows/ci.yml/badge.svg)](https://github.com/yangyu666/dsh-jev-prune/actions/workflows/ci.yml) ![smoke checks](https://img.shields.io/badge/smoke%20checks-104%20passing-success)
+![license](https://img.shields.io/badge/license-MIT-blue) ![node](https://img.shields.io/badge/node%20%3E%3D22.19-339933) ![dsh](https://img.shields.io/badge/DSH-0.1.x--rc-orange) [![CI](https://github.com/yangyu666/dsh-jev-prune/actions/workflows/ci.yml/badge.svg)](https://github.com/yangyu666/dsh-jev-prune/actions/workflows/ci.yml) ![smoke checks](https://img.shields.io/badge/smoke%20checks-113%20passing-success)
 
 ## The problem it solves
 
@@ -30,14 +30,29 @@ A layer-2 receipt looks like this:
 
 ```
 [已压缩 · 确定性回执] 原历史 s25–s27 是 1 次工具调用（共约 16489 字符输出），
-为释放上下文已移出。以下为事实清单（代码生成，无模型推断）：
+为释放上下文已移出。以下为事实清单（工具名/入参/字符数/seq 由代码算出；模型原话逐字引用，不含任何推断）：
+· s25 模型原话（逐字引用）：identifiers：把版本字符串拆成标识符。Next inc.js.
 · s27 read：C:\Users\you\project\src\state.js → 16489 字符输出
-原始事件仍完整保存在会话日志中（seqs 25–27）。需要内容时重跑相同命令/读取相同文件即可。
+原始事件仍完整保存在会话日志中（seqs 25–27）。需要内容时重跑相同命令/读取相同文件即可；本回执不含对内容的解释。
 ```
 
 Parallel tool batches are evaluated per call/result pair. DSH 0.1.5 can replace one surface node or one balanced contiguous region, but cannot remove five pairs from a six-call assistant message in one atomic operation. For a mixed batch, the plugin therefore replaces each eligible `tool/result` body with a short receipt through DSH's native single-node `replace` protocol; rejected and recent results remain byte-for-byte unchanged, the assistant head stays intact, and tool pairing remains valid after every replacement. Results are matched to calls by `callId`, so completion order may differ from declaration order. A fully eligible batch still uses `compactRegion` and removes the whole balanced step.
 
 > The receipt body is emitted by the plugin's own JavaScript, so its wording is Chinese today — as is the `/jev` status output. The `jev_*` tool descriptions are already English. Localizing the runtime strings is a separate change.
+
+## Measured results
+
+Numbers below come from a three-arm measurement of a 37-step "read every file in a directory, strictly one at a time" long task over `semver@6e05b76`: **A** = vanilla DSH (baseline), **B** = the plugin with `compactReceipts: false` (layer 1 only), **C** = the plugin with defaults (both layers). Every number is taken from the `usage` object the API actually returned in the DSH session logs — no estimator is involved in scoring.
+
+**Layer 1 acts on every long run; the baseline never does.** Layer 1 trimmed stale results in every plugin-arm run (4–7 nodes per long run; arm A trims 0 by definition), and answers on the short/medium/long tasks were correct in every arm.
+
+**Long tasks run on a fraction of the full-price input.** Uncached ("full-price") input tokens per completed 37-step run: baseline 75,781–87,872 vs full plugin 25,516–45,071 — roughly a third of the baseline at equal task scope. Report token classes separately: the cache-hit share of input is high (78–94%) and hit/miss prices differ by ~50×, so total-token comparisons mislead by design.
+
+**Fewer destructive compactions — some of them receipts instead of summaries.** Per completed long run, DSH's own model-written summary compactions dropped from 31–40 (baseline) to 15–23 with the full plugin, of which 6–8 were replaced by deterministic receipts rendered by code. Layer 2 stays deliberately silent on short/medium tasks — its gates require a contiguous run of eligible read-only steps — so on those workloads the effect comes from layer 1. Even when layer 2 fires, DSH-initiated compactions still exist and fall back to model summaries: the plugin reduces them, it does not eliminate them.
+
+**A failure mode we found and fixed.** Receipts replace a whole "call + result" step, including the assistant message that carried it; in one long run the model's intermediate notes were erased step by step (12 of 13) and it stopped issuing tool calls mid-task. Receipts now carry each step's **assistant-visible text verbatim** (`text` blocks only, `reasoning` drafts excluded, zero model generation; bounded by `receiptTextChars`, default 400, `0` disables). After the fix, the same long task completed in every run with correct answers.
+
+> **Caveats, stated up front**: n = 1–3 per cell — treat these numbers as magnitudes and directions, not statistics. The context window was pinned to **10K** for all arms (with the default 1M window neither layer can trigger — see *Host compaction threshold vs. `softLimit`*), so the numbers describe that regime.
 
 ## Gating (layer 2)
 
@@ -110,9 +125,7 @@ node wire_profile.mjs <DSH_HOME> <profile-name>
 | `keepMode` | `budget` | Layer 1 decision rule. `budget`: *how much* to trim is set by the pressure-gap ratio, *which* results by Jev's ranking (see below). `absolute`: the legacy fixed-threshold behaviour |
 | `keepThreshold` | `0.5` | Layer 1: in `absolute` mode, `P(keep)` ≥ this means no trimming; in `budget` mode it is a **protection ceiling** only (results at or above it never enter the candidate pool) |
 | `alwaysTrimRatio` | `0.5` | Layer 1: fixed trim ratio used **only** under `judgeOn: 'always'` (that mode has no pressure signal to derive one from). The budget is this fraction of the candidate pool's total character gain. `pressure` mode computes the ratio from the gap and ignores this key |
-| `volumeBudgetThresholdChars` | `8192` | ⚠️ **Deprecated** (kept only for compatibility): early `budget` mode anchored the budget on the volume rule; it now uses the pressure-gap ratio instead, so this key no longer takes effect |
 | `keepFloorThreshold` / `minCandidatesForBudget` | `0.2` / `4` | `budget` mode small-population fallback: with fewer than 4 judged candidates, only results with `P(keep) < 0.2` are eligible (same degraded-mode shape as layer 2) |
-| `budgetMinChars` | `0` | ⚠️ **Deprecated** (kept only for compatibility): same as above, no longer takes effect |
 | `resultExcerptChars` | `240` | Layer 1: per-result excerpt budget copied into the judge's state (see below); `0` restores the blind `ok, N chars` line |
 | `preserveRecent` | `4` | Layer 1 leaves the most recent N surface nodes alone |
 | `headChars` / `tailChars` | `600` / `200` | Layer 1: how many head/tail characters a trim keeps |
@@ -135,6 +148,8 @@ node wire_profile.mjs <DSH_HOME> <profile-name>
 | `dryRun` | `false` | Both layers only judge and account; nothing is changed |
 | `heartbeatFile` | `''` | Where to persist state (the host swallows plugin logs, so a file is the only external observation channel) |
 
+> Deprecated keys kept only for compatibility (they no longer take effect): `volumeBudgetThresholdChars`, `budgetMinChars` — early `budget` mode anchored the budget on the volume rule; it now uses the pressure-gap ratio.
+
 ### Retrying judge requests
 
 A single network hiccup used to void the **entire round** of judging — no candidate got a probability and both layers silently did nothing. Failures are now classified:
@@ -149,7 +164,7 @@ A single network hiccup used to void the **entire round** of judging — no cand
 
 Batches are isolated too: one failed batch no longer discards the remaining ones, and the count shows up as `失败批次 N 个` in the status report. Only when **every** batch fails is the round treated as failed.
 
-**Counter semantics** (clarified in the PR #28 review): `client.lastRetries` is reset at the start of every `ask` and is what the status report shows, while `client.retries` is the lifetime total for the client (useful for "has this client ever had to retry?"). `client.requests` counts **HTTP attempts actually issued**, including failed ones, so the identity `requests === successful asks + retries` holds. Using the lifetime counter as if it described the current pass would make the report show `重试 N 次` forever after a single hiccup, with N only ever climbing.
+**Counter semantics**: `client.lastRetries` is reset at the start of every `ask` and is what the status report shows, while `client.retries` is the lifetime total for the client (useful for "has this client ever had to retry?"). `client.requests` counts **HTTP attempts actually issued**, including failed ones, so the identity `requests === successful asks + retries` holds.
 
 ### Token-estimate accuracy
 
@@ -157,7 +172,7 @@ Batches are isolated too: one failed batch no longer discards the remaining ones
 
 Mean absolute error drops from **20.5% to 10.7%** (holdout 20.5% → 14.4%), and the **direction** was corrected: the old formula over-estimated pure English by **+37%** and Unix paths by **+44%**, and since both layers use this value in a ratio, it was tightening both gates. The new estimate is essentially unbiased (−0.3%).
 
-`npm run check` asserts accuracy against a **holdout set** (5 samples that took no part in the fit, with reference lengths measured from the real tokenizer; current MAE 5.5%): a hard `MAE ≤ 15%` bound plus a directional assertion that English prose must not be over-estimated. **This distinction matters** (corrected in the PR #28 review): the first version reused the calibration data itself, which made the assertion a tautology — it could only catch "someone hand-edited the constants", never "the constants overfit the fitting set". With a real holdout, pushing `wordSlope` to 0.9 jumps the MAE to 38.7% and fails immediately. (Also: the holdout reference lengths must be **measured** with the real tokenizer, not estimated — 4 of the 5 values I first hand-wrote were off by more than 10%, i.e. the assertion would have been built on wrong numbers.)
+`npm run check` asserts accuracy against a **holdout set** (5 samples that took no part in the fit, with reference lengths measured from the real tokenizer; current MAE 5.5%): a hard `MAE ≤ 15%` bound plus a directional assertion that English prose must not be over-estimated. The holdout is what gives this assertion teeth — an assertion built on the calibration data itself is a tautology that can only catch "someone hand-edited the constants", never "the constants overfit the fitting set"; with a real holdout, pushing `wordSlope` to 0.9 jumps the MAE to 38.7% and fails immediately.
 
 ### Pressure-gate failure direction
 
@@ -165,7 +180,7 @@ Both layers fail **closed** and in the same direction: **when the threshold itse
 
 The old behaviour was asymmetric — layer 2 skipped when it could not resolve a threshold, while layer 1 simply **fell through and proceeded**; more subtly, a missing meter left `used` at `0`, so `0 < threshold` was always true and judging ran **every single round**, i.e. the gate did not exist. For a gate whose purpose is to avoid spending Jev calls, "if we cannot tell, do not spend" is the safe direction.
 
-**The boundary** (corrected during the PR #28 review): failing closed justifies declining to spend, but it must not turn into silently switching the feature off. When the soft limit is an **absolute token count** (`softLimit: 3000`), the threshold comes straight from `limit.value` and **the meter is irrelevant** — so if the meter is missing or throws, the gate is simply left **un-armed for that pass** (reported as `压力门本次不设防` at `warn` level) and judging proceeds. An earlier revision of this PR required a successful measurement unconditionally, which turned "stop wasting money" into "the first layer never runs again" for any host that does not register `tokenMeter` — strictly worse than the bug it was fixing. `smoke_apply.mjs` pins both directions.
+**The boundary**: failing closed justifies declining to spend, but it must not turn into silently switching the feature off. When the soft limit is an **absolute token count** (`softLimit: 3000`), the threshold comes straight from `limit.value` and **the meter is irrelevant** — so if the meter is missing or throws, the gate is simply left **un-armed for that pass** (reported as `压力门本次不设防` at `warn` level) and judging proceeds. `smoke_apply.mjs` pins both directions.
 
 Note that `tokenMeter` is a **host-provided** service; if your host does not expose it, configure `softLimit` as an absolute token count (or set `judgeOn: 'always'` / `compactOn: 'always'`) rather than relying on ratio-based pressure gating.
 

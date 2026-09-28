@@ -7,7 +7,7 @@
 
 [English](README.md) · **简体中文**
 
-![license](https://img.shields.io/badge/license-MIT-blue) ![node](https://img.shields.io/badge/node%20%3E%3D22.19-339933) ![dsh](https://img.shields.io/badge/DSH-0.1.x--rc-orange) [![CI](https://github.com/yangyu666/dsh-jev-prune/actions/workflows/ci.yml/badge.svg)](https://github.com/yangyu666/dsh-jev-prune/actions/workflows/ci.yml) ![smoke checks](https://img.shields.io/badge/smoke%20checks-104%20passing-success)
+![license](https://img.shields.io/badge/license-MIT-blue) ![node](https://img.shields.io/badge/node%20%3E%3D22.19-339933) ![dsh](https://img.shields.io/badge/DSH-0.1.x--rc-orange) [![CI](https://github.com/yangyu666/dsh-jev-prune/actions/workflows/ci.yml/badge.svg)](https://github.com/yangyu666/dsh-jev-prune/actions/workflows/ci.yml) ![smoke checks](https://img.shields.io/badge/smoke%20checks-113%20passing-success)
 
 ## 它解决什么问题
 
@@ -30,12 +30,27 @@ DSH 自带的上下文回收是**纯体积**的：工具结果超过阈值就掐
 
 ```
 [已压缩 · 确定性回执] 原历史 s25–s27 是 1 次工具调用（共约 16489 字符输出），
-为释放上下文已移出。以下为事实清单（代码生成，无模型推断）：
+为释放上下文已移出。以下为事实清单（工具名/入参/字符数/seq 由代码算出；模型原话逐字引用，不含任何推断）：
+· s25 模型原话（逐字引用）：identifiers：把版本字符串拆成标识符。Next inc.js.
 · s27 read：C:\Users\you\project\src\state.js → 16489 字符输出
-原始事件仍完整保存在会话日志中（seqs 25–27）。需要内容时重跑相同命令/读取相同文件即可。
+原始事件仍完整保存在会话日志中（seqs 25–27）。需要内容时重跑相同命令/读取相同文件即可；本回执不含对内容的解释。
 ```
 
 并行工具批次按每一对 call/result 独立判定。DSH 0.1.5 只能原子替换一个 surface 节点，或替换一个配对平衡的连续区间，不能从同一条 6-call assistant 消息里一次抽走其中 5 对。因此遇到混合批次时，插件使用 DSH 原生的单节点 `replace` 协议，把每个合格 `tool/result` 的正文换成短回执；不合格及最近区结果逐字保留，assistant 头不改，每次替换前后工具配对都完整。call 与 result 按 `callId` 匹配，允许并行结果以不同顺序完成。整批全部合格时仍走 `compactRegion`，移出整个平衡步骤。
+
+## 实测数据
+
+以下数字来自一次三臂对照测量，任务是在 `semver@6e05b76` 上执行一个 **37 步"逐个读取目录下每个文件"** 的长任务：**A** = 原样 DSH（基线），**B** = 插件 + `compactReceipts: false`（仅第一层），**C** = 插件默认（两层全开）。每个数字都取自 DSH 会话日志里 **API 实际返回的 `usage`** —— 评分不使用任何估算器。
+
+**第一层在每次长任务运行里都动作；基线从不动作。** 插件两臂的每一次长任务运行都有第一层裁剪发生（每次 4–7 个节点；A 臂按定义为 0），短/中/长三类任务上三臂的答案全部正确。
+
+**长任务：全价输入只剩零头。** 每次完成的 37 步运行中，未命中（全价）输入 token：基线 75,781–87,872，完整插件 25,516–45,071 —— 同等任务量下约为基线的三分之一。必须分项报告 token：输入的缓存命中占比很高（78–94%），且命中/未命中单价相差约 50 倍，**用总 token 数比较会系统性误导**。
+
+**破坏性压缩更少 —— 其中一部分由回执替代。** 每次完成的长任务运行里，DSH 自身发起的**模型摘要**压缩从基线的 31–40 次降到完整插件下的 15–23 次，其中 **6–8 次被代码渲染的确定性回执替代**。第二层在短/中任务上**有意保持静默** —— 它的门控要求一段连续合格的只读步骤 —— 所以那些负载上的收益来自第一层。即便第二层触发，DSH 自行发起的压缩仍然存在并回退为模型摘要：**插件减少它们，而不是消灭它们**。
+
+**一个我们主动发现并修复的失效模式。** 回执替换的是整段「调用 + 结果」，其中包含承载它的 assistant 消息；一次长任务运行中，模型自己的中间记录被逐步抹掉（13 条只剩 1 条），随后它停止发起工具调用。现在回执会**逐字带上该步 assistant 的可见文本**（只取 `text` 块、排除 `reasoning` 草稿、零模型生成；长度由 `receiptTextChars` 约束，默认 400，设 `0` 关闭）。修复后，同一长任务在每次运行中都完成且答案正确。
+
+> **先把丑话说在前面**：每格 n = 1–3 —— 这些数字只代表量级与方向，不构成统计结论。三臂的上下文窗口统一压到 **10K**（默认 1M 窗口下两层都不会触发，见「宿主压缩阈值与 `softLimit`」），数字描述的是该量级下的行为。
 
 ## 门控（第二层）
 
@@ -108,9 +123,7 @@ node wire_profile.mjs <DSH_HOME> <profile名>
 | `keepMode` | `budget` | 第一层裁决模式。`budget`：*裁多少*由压力缺口比例定、*裁哪些*由 Jev 排序定（见下文）；`absolute`：旧的固定阈值行为 |
 | `keepThreshold` | `0.5` | 第一层：`absolute` 模式下 `P(保留)` ≥ 该值不裁；`budget` 模式下只是**保护上限**（达到它的一条都不进候选池） |
 | `alwaysTrimRatio` | `0.5` | 第一层：**仅**在 `judgeOn: 'always'` 下使用的固定裁剪比例（该模式没有压力信号可推）。预算 = 候选池总字符增益 × 该比例；`pressure` 模式由缺口自动算，与此键无关 |
-| `volumeBudgetThresholdChars` | `8192` | ⚠️ **已废弃**（保留仅为兼容）：早期 `budget` 模式把预算错定在体积规则上，现已改为压力缺口比例，此键不再生效 |
 | `keepFloorThreshold` / `minCandidatesForBudget` | `0.2` / `4` | `budget` 模式小样本降级：判定候选不足 4 条时，只有 `P(保留) < 0.2` 的结果可裁（与第二层同款降级形态） |
-| `budgetMinChars` | `0` | ⚠️ **已废弃**（保留仅为兼容）：同上，不再生效 |
 | `resultExcerptChars` | `240` | 第一层：写入判定 state 的每条结果摘录预算（见下文）；`0` 恢复盲判的 `ok, N chars` 行 |
 | `preserveRecent` | `4` | 第一层不碰最近 N 个 surface 节点 |
 | `headChars` / `tailChars` | `600` / `200` | 第一层裁剪保留的头/尾字符数 |
@@ -133,6 +146,8 @@ node wire_profile.mjs <DSH_HOME> <profile名>
 | `dryRun` | `false` | 两层只判定记账、不动手 |
 | `heartbeatFile` | `''` | 状态落盘路径（宿主会吞掉插件日志，落盘是唯一的外部观测通道） |
 
+> 已废弃、仅为兼容保留的键（均不再生效）：`volumeBudgetThresholdChars`、`budgetMinChars` —— 早期 `budget` 模式把预算锚在体积规则上，现已改为压力缺口比例。
+
 ### 判定请求的重试
 
 一次网络抖动原本会让**整轮判定**作废——本次 pass 的所有候选都没有概率，两层随即静默不动。现在按失败类型区分处理：
@@ -147,7 +162,7 @@ node wire_profile.mjs <DSH_HOME> <profile名>
 
 多个批次之间也做了容错：某个批失败不再让后续批次一起放弃，失败批数记入状态报告的 `失败批次 N 个`；只有**全部**批次都失败才当作整轮失败。
 
-**计数口径**（PR #28 review 澄清）：`client.lastRetries` 在每次 `ask` 开头归零，状态报告读的是它；`client.retries` 是这个 client 的**生命周期累计量**（用于回答"这个 client 从建起来到现在重试过没有"）；`client.requests` 计的是**真的打出去的 HTTP 尝试次数**（含失败的），所以 `requests === 成功的 ask 数 + retries` 恒成立。把累计量当成"本次"用，会导致状态报告在一次抖动之后**永久**显示「重试 N 次」且数字只增不减。
+**计数口径**：`client.lastRetries` 在每次 `ask` 开头归零，状态报告读的是它；`client.retries` 是这个 client 的**生命周期累计量**（用于回答"这个 client 从建起来到现在重试过没有"）；`client.requests` 计的是**真的打出去的 HTTP 尝试次数**（含失败的），所以 `requests === 成功的 ask 数 + retries` 恒成立。
 
 ### token 估算的精度
 
@@ -155,7 +170,7 @@ node wire_profile.mjs <DSH_HOME> <profile名>
 
 平均绝对偏差从 **20.5% 降到 10.7%**（留出集 20.5% → 14.4%），且**方向性**修正了：旧实现在纯英文上高估 **+37%**、Unix 路径 **+44%**，而两层的门都拿它做分子/分母，等于把门都收紧了；新实现整体偏置约 **−0.3%**。
 
-`npm run check` 里的精度断言用的是**留出集**（5 组未参与拟合的样本，实测值硬编码，当前 MAE 5.5%），阈值 MAE ≤ 15% 加上一条"纯英文不得显著高估"的方向性断言。**这一点很重要**（PR #28 review 修正）：早期版本直接复用标定数据本身做断言，那是同义反复——它必然通过，只能防"手改常数"，完全防不了"过拟合到拟合集"。换成留出集后，把 `wordSlope` 调到 0.9 会让 MAE 跳到 38.7% 并立刻失败，判别力是真的。（另：留出集的实测值必须用真 BPE 量，不能凭估算填——我第一版手填的 5 个参考值有 4 个偏差 10% 以上，等于把断言建在错数上。）
+`npm run check` 里的精度断言用的是**留出集**（5 组未参与拟合的样本，实测值硬编码，当前 MAE 5.5%），阈值 MAE ≤ 15% 加上一条"纯英文不得显著高估"的方向性断言。留出集是这条断言有判别力的原因——直接复用标定数据做断言是同义反复，只能防"手改常数"，防不了"过拟合到拟合集"；换成留出集后，把 `wordSlope` 调到 0.9 会让 MAE 跳到 38.7% 并立刻失败。
 
 ### 压力门的失败方向
 
@@ -163,9 +178,35 @@ node wire_profile.mjs <DSH_HOME> <profile名>
 
 旧实现是不对称的——第二层解析不出阈值时不做，第一层却直接**穿透照做**；更隐蔽的是 meter 缺失时 `used` 恒为 `0`，于是 `0 < threshold` 永远成立，判定**每一轮都跑**，压力门等于不存在。对一个"省 Jev 调用钱"的门来说，"解析不出来就别花钱"才是安全方向。
 
-**边界（PR #28 review 修正）**：fail-closed 只授权"拒绝花钱"，不能变成"把功能悄悄关掉"。`softLimit` 是**绝对 token 数**（如 `softLimit: 3000`）时，阈值直接来自 `limit.value`，**与 meter 无关**——所以 meter 缺失/抛错时只是压力门**本次不设防**（以 `warn` 级记一条 `压力门本次不设防`），判定照常进行。本 PR 的早期版本无条件要求"必须量到用量"，于是对任何没注册 `tokenMeter` 的宿主，第一层从此再也不跑——比它修的那个 bug 更糟。`smoke_apply.mjs` 把两个方向都钉住了。
+**边界**：fail-closed 只授权"拒绝花钱"，不能变成"把功能悄悄关掉"。`softLimit` 是**绝对 token 数**（如 `softLimit: 3000`）时，阈值直接来自 `limit.value`，**与 meter 无关**——所以 meter 缺失/抛错时只是压力门**本次不设防**（以 `warn` 级记一条 `压力门本次不设防`），判定照常进行。`smoke_apply.mjs` 把两个方向都钉住了。
 
 另注意 `tokenMeter` 是**宿主提供**的服务；如果你的宿主不暴露它，请把 `softLimit` 配成绝对 token 数（或用 `judgeOn: 'always'` / `compactOn: 'always'`），而不要依赖比例式的压力门。
+
+### 宿主压缩阈值与 `softLimit`
+
+第一层并不自己调度 `pruneSession`。宿主的 `compaction-basic` 基线束会在到达**它自己的**压力阈值（`thresholdRatio`，默认 0.8）或上下文溢出时调用它；本插件的 `softLimit` 决定 Jev 判定何时开始、裁剪预算多大，**并不取代**宿主阈值。
+
+因此压力模式下，一次第一层裁剪要同时满足：
+
+```text
+宿主调用 pruneSession
+且
+已用 token 超过 softLimit（压力缺口预算大于零）
+```
+
+`softLimit` 应保持在宿主 `thresholdRatio` 及以下，除非"延迟裁剪"是有意为之。例如宿主 `thresholdRatio: 0.8`、插件 `softLimit: 90%` 时，80%–90% 之间的宿主调用得到的插件预算为零，裁剪要到 90% 之后才开始；默认 `softLimit: 55%` 时，判定在宿主常规的 80% 压缩调用之前就已就绪。
+
+对 `@deepseek-ai/dsh-llm-deepseek@0.1.5-rc.2`，在匹配的模型条目上配置一个更小的上下文窗口：
+
+```yaml
+- id: llm-deepseek
+  config:
+    models:
+      - id: deepseek-flash
+        contextWindow: 10000
+```
+
+只设 `defaultContextWindow` **不会**覆盖目录里自带 `contextWindow` 的模型——模型条目优先。插件解析不出有效窗口时，比例式门会停止动作并报告原因，而不是瞎猜。
 
 ### 第一层：压力分位式裁决
 
