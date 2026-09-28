@@ -129,6 +129,7 @@ node wire_profile.mjs <DSH_HOME> <profile-name>
 | `compactTools` | read-only set | Allow-list, **non-empty by default** (`DSH_READONLY_TOOLS`: `read`/`glob`/`grep`/`list`/`fetch`… plus PowerShell read-only cmdlets such as `getchilditem`/`selectstring`). Setting it to `[]` relaxes the gate to the deny-list only — shell calls then become movable too, which is an explicit opt-in into an unsafe mode |
 | `evidenceGuard` / `evidencePatterns` | `true` / built-in list | Evidence guard |
 | `compactMinChars` / `receiptMaxRatio` | `2000` / `0.5` | Layer 2 economical floors |
+| `receiptArgChars` / `receiptTextChars` | `120` / `400` | Maximum code-point lengths for each rendered call argument and assistant-visible-text excerpt in a receipt; set the latter to `0` to omit assistant excerpts |
 | `maxCompactionsPerPass` | `3` | How many compaction transactions one pass may run. Raised to 3 so a large context converges in a **single** pass instead of being squeezed across many pre-steps; set to `1` for the old behaviour |
 | `judgeMaxRetries` / `judgeRetryBaseMs` | `2` / `300` | Retry count and backoff base for judge requests (see below); `0` disables retries |
 | `dryRun` | `false` | Both layers only judge and account; nothing is changed |

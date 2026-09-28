@@ -327,6 +327,8 @@ export const Config = z.object({
   maxCompactionsPerPass: z.number().min(1).default(3),
   /** 回执里每行入参截断到多少字符 */
   receiptArgChars: z.number().min(0).default(120),
+  /** 回执里每步 assistant 可见文本的原文摘录上限；0 表示不写入 */
+  receiptTextChars: z.number().min(0).default(400),
 
   /**
    * 心跳文件路径。非空时，插件会在加载完成、每次判定 pass、每次裁剪后写一份 JSON 快照。
@@ -394,6 +396,7 @@ const CONFIG_RANGES = {
   minCharsToPrune: [0, 1e9],
   compactMinChars: [0, 1e9],
   receiptArgChars: [0, 1e9],
+  receiptTextChars: [0, 1e9],
   inputChars: [0, 1e9],
   maxStepTextChars: [0, 1e9],
   maxStepReasoningChars: [0, 1e9],
@@ -512,6 +515,7 @@ export function resolveConfig(config = {}) {
     receiptMaxRatio: clampConfigNumber('receiptMaxRatio', config.receiptMaxRatio, 0.5, (w) => warnings.push(w))[0],
     maxCompactionsPerPass: clampConfigNumber('maxCompactionsPerPass', config.maxCompactionsPerPass, 3, (w) => warnings.push(w))[0],
     receiptArgChars: clampConfigNumber('receiptArgChars', config.receiptArgChars, 120, (w) => warnings.push(w))[0],
+    receiptTextChars: clampConfigNumber('receiptTextChars', config.receiptTextChars, 400, (w) => warnings.push(w))[0],
     dryRun: config.dryRun ?? false,
     wording: config.wording ?? 'goal',
     minHistoryLines: clampConfigNumber('minHistoryLines', config.minHistoryLines, 8, (w) => warnings.push(w))[0],
@@ -1450,7 +1454,11 @@ export function apply(ctx, config, deps = {}) {
         : []
       const receipt = isPartial
         ? partialReceipts.join('\n')
-        : renderReceipt(range, { eventAt, argChars: cfg.receiptArgChars })
+        : renderReceipt(range, {
+            eventAt,
+            argChars: cfg.receiptArgChars,
+            textChars: cfg.receiptTextChars,
+          })
       const receiptTokens = estimateTokens(receipt)
       const shadowedTokens = spanTokens(agent, spanSeqs)
       const action = {

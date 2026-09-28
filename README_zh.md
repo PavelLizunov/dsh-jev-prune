@@ -127,6 +127,7 @@ node wire_profile.mjs <DSH_HOME> <profile名>
 | `compactTools` | 只读工具集 | 白名单，**默认非空**（`DSH_READONLY_TOOLS`：`read`/`glob`/`grep`/`list`/`fetch`…，含 PowerShell 的 `getchilditem`/`selectstring` 等只读命令）；配成 `[]` 会**放宽**为只受黑名单约束——shell 调用也会被整对移出，属显式 opt-in 的不安全模式 |
 | `evidenceGuard` / `evidencePatterns` | `true` / 内置词表 | 证据守卫 |
 | `compactMinChars` / `receiptMaxRatio` | `2000` / `0.5` | 第二层经济性下限 |
+| `receiptArgChars` / `receiptTextChars` | `120` / `400` | 回执中每条调用参数、每步 assistant 可见文本原文摘录的码点上限；后者设为 `0` 可关闭原文摘录 |
 | `maxCompactionsPerPass` | `3` | 一次 pass 最多做几次压缩事务。提到 3 是为了让大上下文在**一轮**里收敛，而不是靠多轮 pre-step 慢慢挤；设成 `1` 回到旧行为 |
 | `judgeMaxRetries` / `judgeRetryBaseMs` | `2` / `300` | 判定请求的重试次数与退避基数（见下）；`0` 关闭重试 |
 | `dryRun` | `false` | 两层只判定记账、不动手 |

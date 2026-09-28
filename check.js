@@ -1136,6 +1136,46 @@ const run = ({ events, cache, cfg, threshold }) => {
   }
 }
 
+// ------------------------------------------------ 回执带上 assistant 可见文本原文摘录
+// 背景：第二层把「调用 + 结果」**整段**移出 surface，其中包含 assistant 消息本身。
+// 若回执只留调用事实，模型自己写下的**结论与进度**会一并消失。`maxStepTextChars`
+// 只拦「长文本」，而「每步一句短结论」的工作流文本很短，拦不住。
+// 实测影响：37 步逐文件读取任务中，模型的 12/13 条中间输出被逐步抹掉，
+// 随后在第 14 步只输出一句概括、不再发起工具调用，任务中途终止。
+{
+  const head = {
+    seq: 1,
+    type: 'assistant/message',
+    data: { message: { content: [
+      { type: 'reasoning', text: '这是思考草稿，不应进入回执' },
+      { type: 'text', text: 'identifiers：把版本字符串拆成标识符。' },
+      { type: 'tool-call', id: 'c1', name: 'read', arguments: JSON.stringify({ file_path: 'internal/identifiers.js' }) },
+    ] } },
+  }
+  const evs = [head, toolResult(2, 'c1', 'x'.repeat(900))]
+  const at = (s) => evs.find((e) => e.seq === s)
+  const range = {
+    start: 1,
+    end: 2,
+    chars: 900,
+    steps: [{
+      headSeq: 1,
+      head,
+      calls: [{ name: 'read', arguments: JSON.stringify({ file_path: 'internal/identifiers.js' }) }],
+      resultSeqs: [2],
+    }],
+  }
+  const text = renderReceipt(range, { eventAt: at })
+  assert.match(text, /模型原话（原文摘录）：identifiers：把版本字符串拆成标识符。/,
+    '回执必须保留该步 assistant 的可见文本原文摘录（否则模型丢失自己的进度/结论）')
+  assert.equal(text.includes('这是思考草稿'), false, 'reasoning 草稿不得进入回执')
+  assert.match(text, /internal\/identifiers\.js/, '调用事实仍必须在回执里')
+  // 确定性仍然成立：同一输入两次渲染完全相同
+  assert.equal(text, renderReceipt(range, { eventAt: at }))
+  assert.equal(/· s\d+ 模型原话/.test(renderReceipt(range, { eventAt: at, textChars: 0 })), false,
+    'receiptTextChars=0 必须真正关闭原文摘录，不能留下一个省略号占位')
+}
+
 // ---------------------------------------------------------------- 证据守卫与入参渲染
 {
   assert.equal(scanEvidence('TypeError: x is undefined', ['error']).hit, true)
@@ -1667,6 +1707,8 @@ const run = ({ events, cache, cfg, threshold }) => {
 
   // ②b 第二层永久静默失效：maxStepTextChars=-1 会让每一步都 text > -1
   assert.equal(resolveConfig({ maxStepTextChars: -1 }).maxStepTextChars, 1200)
+  assert.equal(resolveConfig({ receiptTextChars: -1 }).receiptTextChars, 400,
+    'receiptTextChars 越界时应回落默认 400')
 
   // ②c 经济性门失效
   assert.equal(resolveConfig({ compactMinChars: -100 }).compactMinChars, 2000)
@@ -1745,11 +1787,12 @@ const run = ({ events, cache, cfg, threshold }) => {
 
 
   // 合法值必须原样保留（钳制不能顺手改掉正常配置）
-  const ok = resolveConfig({ preserveRecent: 0, compactPreserveRecent: 0, headChars: 0, maxStepTextChars: 5000, receiptMaxRatio: 1 })
+  const ok = resolveConfig({ preserveRecent: 0, compactPreserveRecent: 0, headChars: 0, maxStepTextChars: 5000, receiptTextChars: 0, receiptMaxRatio: 1 })
   assert.equal(ok.preserveRecent, 0, '0 是合法值（不保护最近区），不得被当成缺省')
   assert.equal(ok.compactPreserveRecent, 0, '第二层最近区也允许显式设为 0')
   assert.equal(ok.headChars, 0)
   assert.equal(ok.maxStepTextChars, 5000)
+  assert.equal(ok.receiptTextChars, 0, '0 表示关闭回执中的 assistant 原文摘录，不得被当成缺省')
   assert.equal(ok.receiptMaxRatio, 1, '1 是上界本身，闭区间内')
   assert.equal(ok[CONFIG_WARNINGS].length, 0)
 
