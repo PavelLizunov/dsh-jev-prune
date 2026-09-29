@@ -1,15 +1,19 @@
 {
-  "name": "dsh-jev-prune",
-  "version": "0.2.0-rc.1-local.4",
+  "name": "@pavellizunov/dsh-jev-prune",
+  "version": "0.2.0-rc.1-local.10",
   "description": "Jev-judged context compaction for DeepSeek Harness. Two layers: prune stale tool results (semantic instead of size-only), and replace spent tool-call ranges with a deterministic receipt instead of a model-written summary.",
   "type": "module",
-  "main": "index.js",
+  "main": "lib/host-020-v10.js",
   "exports": {
-    ".": "./index.js",
+    ".": "./lib/host-020-v10.js",
+    "./client": "./client.js",
+    "./host-020": "./lib/host-020-v10.js",
+    "./lib/host-020-v10.js": "./lib/host-020-v10.js",
     "./*.js": "./*.js",
     "./package.json": "./package.json"
   },
   "files": [
+    "lib/host-020-v10.js", "client.js",
     "index.js",
     "jev.js",
     "state.js",
@@ -71,11 +75,12 @@
     "typesafe"
   ],
   "dsh": {
+    "client": {"platform":"web", "inject":["@deepseek-ai/dsh-client-ui-plugin-manager"]},
     "bundle": {
       "patch": "./cordis.patch.yml"
     },
     "compatibility": {
-      "testedAgainst": "@deepseek-ai/dsh@0.1.5-rc.2",
+      "testedAgainst": "@deepseek-ai/dsh@0.2.0-rc.1",
       "note": "DSH 0.1.x is a pre-release line; plugin-facing surfaces (event shapes, service names) may change between rc versions. After upgrading DSH, run `node check.js` and the smoke test, and use the `jev_probe_shapes` tool once in a real session."
     }
   }

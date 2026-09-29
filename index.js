@@ -79,8 +79,8 @@ import {
  *   · 记进心跳与状态（可观测）
  *   · major.minor 与测试版本不一致时打一次 warning（不拒绝加载——也许只是字段没变）
  */
-const TESTED_DSH_VERSION = '0.1.5-rc.2'
-const TESTED_DSH_SERIES = '0.1'
+const TESTED_DSH_VERSION = '0.2.0-rc.1'
+const TESTED_DSH_SERIES = '0.2'
 
 function detectDshVersion() {
   const readVersionAt = (path) => {
@@ -588,7 +588,13 @@ export function isCompactableTool(tool, cfg) {
  */
 export function apply(ctx, config, deps = {}) {
   const cfg = resolveConfig(config)
-  if (!cfg.enabled) return
+  deps.onControl?.({
+    update(patch) {
+      Object.assign(cfg, resolveConfig({ ...cfg, ...patch }))
+      if (!deps.judge && Object.hasOwn(patch, 'apiKey')) judge.apiKey = patch.apiKey || ''
+    },
+    status() { return { ...stats, enabled: cfg.enabled, dryRun: cfg.dryRun, judgeReady: judge.ready, model: cfg.model } },
+  })
 
   if (dshVersionMatches === false) {
     ctx.logger?.info?.(`[jev-prune] DSH ${dshVersion} 与测试版本 ${TESTED_DSH_VERSION} 不同系列 —— 事件字段可能已漂移，建议先跑 jev_probe_shapes 核对`)
@@ -601,12 +607,18 @@ export function apply(ctx, config, deps = {}) {
 
   const envKey = typeof process !== 'undefined' ? process.env?.TYPESAFE_API_KEY : undefined
   let proxyDispatcher
-  const proxyFetch = cfg.proxyUrl ? async (url, options) => {
+  let dispatcherUrl
+  const proxyFetch = async (url, options) => {
     const { ProxyAgent, fetch } = await import('undici')
-    proxyDispatcher ??= new ProxyAgent(cfg.proxyUrl)
+    if (!cfg.proxyUrl) return fetch(url, options)
+    if (dispatcherUrl !== cfg.proxyUrl) {
+      await proxyDispatcher?.close()
+      proxyDispatcher = new ProxyAgent(cfg.proxyUrl)
+      dispatcherUrl = cfg.proxyUrl
+    }
     return fetch(url, { ...options, dispatcher: proxyDispatcher })
-  } : undefined
-  if (cfg.proxyUrl) ctx.effect?.(() => () => proxyDispatcher?.close())
+  }
+  ctx.effect?.(() => () => proxyDispatcher?.close())
   const judge = deps.judge ?? new JevClient({
     apiKey: cfg.apiKey || envKey || '',
     model: cfg.model,
@@ -1167,6 +1179,7 @@ export function apply(ctx, config, deps = {}) {
   // 逐节点裁决逻辑放在 prune.js 里（纯函数 + 依赖注入），这样才能脱离 DSH 单测。
   // 这里只负责补齐它需要的依赖。
   function pruneViaJev(pruner, session) {
+    if (!cfg.enabled) return {pruned:[],charsRemoved:0,plan:null,decisions:[]}
     const nameByCallId = buildToolNameIndex(sessionEvents(session))
     const out = pruneSessionWithJev({
       pruner,
@@ -1178,8 +1191,10 @@ export function apply(ctx, config, deps = {}) {
       toolNameOf: (event) => toolNameOf(event, nameByCallId),
       callIdOf,
     })
+    stats.lastPrune = { dryRun: cfg.dryRun, pruned: out.pruned.length, charsRemoved: out.charsRemoved, seqs: out.pruned.map(p => p.originalSeq) }
     writeHeartbeat({
       lastPrune: {
+        dryRun: cfg.dryRun,
         nodes: session.surface?.nodes?.length ?? null,
         pruned: out.pruned.length,
         charsRemoved: out.charsRemoved,
@@ -1686,6 +1701,10 @@ export function apply(ctx, config, deps = {}) {
     // P0-3：判定链条的最外层计数。没有它时，"一次性零判定"无法区分
     // 「事件没触发」/「提前 return」/「门控跳过」——三者的排查方向完全不同。
     stats.preStepEvents = (stats.preStepEvents ?? 0) + 1
+    if (!cfg.enabled) return next()
+    judge.model = cfg.model
+    judge.timeoutMs = cfg.judgeTimeoutMs
+    if (!deps.judge && cfg.apiKey) judge.apiKey = cfg.apiKey
     // 双保险：如果 apply() 时服务还没就绪，每次 pre-step 再试一次。
     // 依赖时序这种东西不该让插件"看起来加载成功、实际什么都没做"。
     if (!takeover.installed) installPrunerOverride()
