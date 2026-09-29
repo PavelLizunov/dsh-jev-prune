@@ -149,7 +149,8 @@ export function buildToolNameIndex(events) {
  * 正文在**内层** content —— 与裁剪器源码 `original.content[0].content` 一致。 */
 export function resultContent(event) {
   const block = firstResultBlock(event)
-  return block?.content ?? null
+  // DSH 0.2 stores tool-role content directly; older logs use an envelope.
+  return block?.content ?? (event?.type === 'tool/result' ? contentOf(event) : null)
 }
 
 function firstResultBlock(event) {

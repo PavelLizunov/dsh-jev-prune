@@ -247,8 +247,9 @@ export function pruneSessionWithJev({ pruner, session, cache, cfg, stats, freeze
     if (event?.type !== 'tool/result') continue
     const original = session.deriveEventMessage(event)
     const result = original?.content?.[0]
-    if (result == null || result.type !== 'tool-result') continue
-    const blocks = result.content
+    const wrapped = result?.type === 'tool-result'
+    const blocks = wrapped ? result.content : original?.content
+    if (!Array.isArray(blocks)) continue
     const chars = countChars(blocks)
     const marker = Array.from(cfg.marker ?? JEV_PRUNE_MARKER).length
     const gain = chars - (cfg.headChars + cfg.tailChars) - marker
@@ -258,7 +259,7 @@ export function pruneSessionWithJev({ pruner, session, cache, cfg, stats, freeze
       (block) => typeof block?.text === 'string' && block.text.includes(cfg.marker ?? JEV_PRUNE_MARKER),
     )
     nodes.push({
-      seq, index, event, original, result, blocks, chars, gain, tool, verdict, alreadyPruned,
+      seq, index, event, original, result, wrapped, blocks, chars, gain, tool, verdict, alreadyPruned,
       inTail: index > lastAllowed,
       blacklisted: isToolIn(cfg.neverPruneTools, tool),
       prob: typeof verdict?.prob === 'number' ? verdict.prob : null,
@@ -307,6 +308,9 @@ export function pruneSessionWithJev({ pruner, session, cache, cfg, stats, freeze
         : action === 'fallback' ? 'no-verdict-fallback' : 'verdict-prune'
     }
 
+    // Early passes never invoke the native size fallback without a Jev verdict.
+    if (cfg.earlyPrune && action === 'fallback') { action = 'keep'; reason = 'no-verdict' }
+
     // keep 的三个来源分开计数（issue #8）：此前落在最近区/黑名单保护的节点
     // 都被记进 keptByJev——"Jev 保留"虚高，而真正的硬规则保护在统计里完全不可见，
     // 用户拿这行数字判断"Jev 的判断在起作用吗"会得出错误结论。
@@ -346,7 +350,7 @@ export function pruneSessionWithJev({ pruner, session, cache, cfg, stats, freeze
       continue
     }
 
-    const message = freeze({ ...original, content: [{ ...result, content }] })
+    const message = freeze({ ...original, content: node.wrapped ? [{ ...result, content }] : content })
     appendShadowPrice({ pruner, session, seq, original })
     const replacement = session.append(
       'tool/result',

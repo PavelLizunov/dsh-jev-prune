@@ -1,3 +1,10 @@
 - insert:
     - id: jev-prune
       name: dsh-jev-prune
+      disabled: true
+      config:
+        compactReceipts: false
+        earlyPrune: true
+        judgeOn: always
+        judgeTimeoutMs: 5000
+        judgeMaxRetries: 0

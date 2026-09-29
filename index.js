@@ -167,7 +167,13 @@ export const DEFAULT_BUDGET_MIN_CHARS = 0
 export const Config = z.object({
   enabled: z.boolean().default(true),
   /** TypeSafe key；留空则读环境变量 TYPESAFE_API_KEY */
-  apiKey: z.string().default(''),
+  apiKey: z.string().role('secret').default(''),
+  credentialRef: z.string().default('TYPESAFE_API_KEY'),
+  proxyUrl: z.string().default(''),
+  earlyPrune: z.boolean().default(false),
+  earlyMinChars: z.number().min(1).default(16000),
+  earlyMinSteps: z.number().min(1).default(4),
+  maxJudgeBatches: z.number().min(1).default(1),
   model: z.string().default('jev-latest'),
   baseUrl: z.string().default('https://api.typesafe.ai/v1/systemone'),
   /** P(保留) ≥ 该值 → 不裁（budget 模式下这是**保护上限**：达到即不进候选池） */
@@ -375,6 +381,9 @@ export const CONFIG_WARNINGS = '__configWarnings'
  * **会转化为内存/时间开销**的那几个（见各自注释与 MAX_* 常量）。
  */
 const CONFIG_RANGES = {
+  earlyMinChars: [1, 1e9],
+  earlyMinSteps: [1, 1e9],
+  maxJudgeBatches: [1, 10],
   // 概率 / 比例：越界会让判据恒真或恒假
   keepThreshold: [0, 1],
   keepFloorThreshold: [0, 1],
@@ -475,6 +484,12 @@ export function resolveConfig(config = {}) {
     ...config,
     enabled: config.enabled ?? true,
     apiKey: config.apiKey ?? '',
+    credentialRef: config.credentialRef ?? 'TYPESAFE_API_KEY',
+    proxyUrl: config.proxyUrl ?? '',
+    earlyPrune: config.earlyPrune ?? false,
+    earlyMinChars: clampConfigNumber('earlyMinChars', config.earlyMinChars, 16000, w => warnings.push(w))[0],
+    earlyMinSteps: Math.floor(clampConfigNumber('earlyMinSteps', config.earlyMinSteps, 4, w => warnings.push(w))[0]),
+    maxJudgeBatches: Math.floor(clampConfigNumber('maxJudgeBatches', config.maxJudgeBatches, 1, w => warnings.push(w))[0]),
     model: config.model ?? 'jev-latest',
     // 维护约定：Config schema 的每个 default 都必须在这里有对应兜底（本键此前遗漏；
     // 影响为零是因为 JevClient 的默认参数会在 undefined 时生效，但约定不该靠下游兜底）。
@@ -585,6 +600,13 @@ export function apply(ctx, config, deps = {}) {
   void resolveFreezeMessage(deps.loadFreezeModule).then((resolved) => { freezeMessage = resolved })
 
   const envKey = typeof process !== 'undefined' ? process.env?.TYPESAFE_API_KEY : undefined
+  let proxyDispatcher
+  const proxyFetch = cfg.proxyUrl ? async (url, options) => {
+    const { ProxyAgent, fetch } = await import('undici')
+    proxyDispatcher ??= new ProxyAgent(cfg.proxyUrl)
+    return fetch(url, { ...options, dispatcher: proxyDispatcher })
+  } : undefined
+  if (cfg.proxyUrl) ctx.effect?.(() => () => proxyDispatcher?.close())
   const judge = deps.judge ?? new JevClient({
     apiKey: cfg.apiKey || envKey || '',
     model: cfg.model,
@@ -592,7 +614,9 @@ export function apply(ctx, config, deps = {}) {
     timeoutMs: cfg.judgeTimeoutMs,
     maxRetries: cfg.judgeMaxRetries,
     retryBaseMs: cfg.judgeRetryBaseMs,
+    fetchImpl: proxyFetch,
   })
+  const earlySteps = new WeakMap()
 
   /** session → Map(结果 seq → {keep, prob, effectProb, chars, tool}) */
   const decisions = new WeakMap()
@@ -888,6 +912,12 @@ export function apply(ctx, config, deps = {}) {
       if (!Number.isFinite(cached?.prob)) return true
       return layer2CandidateSeqs.has(candidate.seq) && !Number.isFinite(cached?.effectProb)
     })
+    if (cfg.earlyPrune) {
+      const elapsed = (earlySteps.get(session) ?? cfg.earlyMinSteps - 1) + 1
+      earlySteps.set(session, elapsed)
+      if (elapsed < cfg.earlyMinSteps || fresh.reduce((n, c) => n + c.chars, 0) < cfg.earlyMinChars) return false
+      earlySteps.set(session, 0)
+    }
     // 压力门控：不到软阈值就不花 Jev 的钱
     //
     // 失败方向（issue #32）：第一层与第二层的压力门必须**同向关闭**。
@@ -1013,10 +1043,12 @@ export function apply(ctx, config, deps = {}) {
         delete questions[`effect_s${candidate.seq}`]
       }
     }
-    const batches = judge.batch(state, questions, {
+    if (cfg.earlyPrune && !fitted) return false
+    const allBatches = judge.batch(state, questions, {
       maxRequestTokens: cfg.maxRequestTokens,
       overheadTokens: 40,
     })
+    const batches = cfg.earlyPrune ? allBatches.slice(0, cfg.maxJudgeBatches) : allBatches
 
     const bySeq = new Map(fresh.map((c) => [c.seq, c]))
     const freshSeqs = [...bySeq.keys()]
@@ -1032,6 +1064,7 @@ export function apply(ctx, config, deps = {}) {
     let batchFailures = 0
     let lastBatchError = null
     let succeeded = 0
+    let incomplete = false
     for (const batch of batches) {
       let answers
       try {
@@ -1044,6 +1077,7 @@ export function apply(ctx, config, deps = {}) {
         continue
       }
       succeeded += 1
+      if (Object.keys(batch).some(id => !Number.isFinite(answers[id]) || answers[id] < 0 || answers[id] > 1)) incomplete = true
       // 遍历本批里的**候选**（一个候选有两个题号 result_sN / effect_sN）。
       // 注意：两轴可能落在**不同批**（预算小的时候每题一批），所以本批只写
       // 它带来的那一轴，另一轴留给它自己的批——合并写在下面按候选统一结算，
@@ -1126,6 +1160,7 @@ export function apply(ctx, config, deps = {}) {
       probSamples: probSamples.slice(-200),
       gate: stats.lastGate,
     })
+    return succeeded > 0 && batchFailures === 0 && !incomplete
   }
 
   // ---------------------------------------------------------- 裁剪（同步）
@@ -1221,6 +1256,7 @@ export function apply(ctx, config, deps = {}) {
   }
 
   function installSummaryHook() {
+    if (!cfg.compactReceipts) return () => {}
     if (summaryHook.installed) return () => {}
     summaryHook = { attempted: true, installed: false, reason: '' }
     const compaction = summaryService()
@@ -1654,6 +1690,10 @@ export function apply(ctx, config, deps = {}) {
     // 依赖时序这种东西不该让插件"看起来加载成功、实际什么都没做"。
     if (!takeover.installed) installPrunerOverride()
     if (!summaryHook.installed) installSummaryHook()
+    if (!deps.judge && !cfg.apiKey && cfg.credentialRef) {
+      try { judge.apiKey = (await ctx.get('credentials')?.resolve(cfg.credentialRef))?.value || envKey || '' }
+      catch { judge.apiKey = '' }
+    }
     if (judge.ready === false) {
       stats.errors += 1
       stats.lastNote = '未配置 TYPESAFE_API_KEY，跳过判定'
@@ -1662,14 +1702,18 @@ export function apply(ctx, config, deps = {}) {
     }
     try {
       // signal 透传（issue #9）：中断后判定请求要能被取消，而不是继续占连接/计费
-      await judgePass(agent, signal)
+      const judged = await judgePass(agent, signal)
+      if (cfg.earlyPrune && judged && !signal?.aborted) {
+        pruneViaJev(ctx.get('toolResultPruner') ?? ctx.toolResultPruner, agent.session)
+      }
     } catch (error) {
       stats.errors += 1
       stats.lastNote = `判定失败：${error?.message ?? String(error)}`
       log('info', stats.lastNote)
     }
+    writeHeartbeat()
     return next()
-  }, true)
+  }, { prepend: true, global: true })
 
   ctx.on('agent/pre-step', async ({ agent, signal }, next) => {
     try {

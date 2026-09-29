@@ -1,6 +1,6 @@
 {
   "name": "dsh-jev-prune",
-  "version": "0.1.0",
+  "version": "0.2.0-rc.1-local.4",
   "description": "Jev-judged context compaction for DeepSeek Harness. Two layers: prune stale tool results (semantic instead of size-only), and replace spent tool-call ranges with a deterministic receipt instead of a model-written summary.",
   "type": "module",
   "main": "index.js",
@@ -39,9 +39,10 @@
     "coverage": "node --experimental-test-coverage --test --test-coverage-include=jev.js --test-coverage-include=prune.js --test-coverage-include=receipt.js --test-coverage-include=state.js --test-coverage-lines=90 --test-coverage-branches=75 --test-coverage-functions=75 check.js smoke_apply.mjs"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-tools": "^0.1.5-rc.2",
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.1",
     "@deepseek-ai/schemastery": "*"
   },
+  "dependencies": { "undici": "^7.0.0" },
   "devDependencies": {
     "@deepseek-ai/dsh-llm": "0.1.5-rc.2",
     "@deepseek-ai/dsh-tools": "0.1.5-rc.2",

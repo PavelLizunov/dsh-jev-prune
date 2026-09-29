@@ -1,5 +1,13 @@
 # dsh-jev-prune
 
+## PavelLizunov fork: DSH 0.2 early first-layer trial
+
+This fork preserves the upstream implementation below and adds direct tool-role content support for DSH 0.2.0-rc.1. Receipt compaction stays disabled in the deployment bundle. Set `earlyPrune: true` to judge at step boundaries after `earlyMinChars` fresh eligible result characters (default 16000), at least `earlyMinSteps` steps apart (4). `maxJudgeBatches` limits each pass (1); configure `judgeMaxRetries: 0` for a hard one-request bound. `judgeOn: always` uses `alwaysTrimRatio` without altering model context-window metadata. Only new eligible results are judged. Missing judgments never invoke volume fallback in early mode, and failed/incomplete passes make no early edits.
+
+Use `credentialRef: TYPESAFE_API_KEY` with the Host credential provider and configure `proxyUrl` in the user profile. The key is not stored in source. `dryRun: true` reports proposed reductions without changing history. The bundle installs disabled. Enable the Host `tool-result-pruner` dependency when the web profile otherwise provides it only inside preset realms. No DSH restart is required; use the running plugin manager for package updates.
+
+Run `node test-020.mjs` for the focused real-Session regression (deterministic judge). The bounded live trial uses `JEV_LIVE=1`, `JEV_CREDENTIALS_FILE`, and `JEV_PROXY_URL`. It verifies `deriveMessages()` and original-event retention, not a representative quality benchmark. The older upstream descriptions and compatibility claims below refer to the original 0.1.5 implementation.
+
 ![dsh-jev-prune — Jev-judged context compaction for DeepSeek Harness](assets/banner.png)
 
 **Jev-judged context compaction for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).**
